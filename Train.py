@@ -11,10 +11,10 @@ from sklearn.cluster import KMeans
 import tensorflow as tf
 from sklearn.mixture import GaussianMixture
 from sklearn.decomposition import PCA
-from keras.models import Model, Sequential
-from keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D
-from keras.initializers import glorot_normal
-from keras import optimizers
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D
+from tensorflow.keras.initializers import glorot_normal
+from tensorflow.keras import optimizers
 import keras.backend as K
 import glob
 import pandas as pd
@@ -282,33 +282,36 @@ def batch_hard_triplet_loss(labels, embeddings, margin, squared=False):
 
 
 image_branch=Sequential()
-resnet50_model = keras.applications.resnet50.ResNet50(include_top=False, weights="imagenet", input_shape=(512,512,3))
+resnet50_model = tf.keras.applications.resnet50.ResNet50(include_top=False, weights="imagenet", input_shape=(512,512,3))
 image_branch.add(resnet50_model)
 #model.add(keras.layers.pooling.AveragePooling2D(pool_size=(2, 2), strides=None, border_mode='valid', dim_ordering='default'))
 #model.add(Flatten())
-image_branch.add(keras.layers.GlobalAveragePooling2D(data_format='channels_last'))
+image_branch.add(tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last'))
 image_branch.add(Dense(1024,kernel_initializer=glorot_normal(seed=None), activation='sigmoid'))
 image_branch.add(Dense(512, kernel_initializer=glorot_normal(seed=None), activation=None))
-image_branch.add(keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
+image_branch.add(tf.keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
 
 text_branch = Sequential()
 text_branch.add(Dense(400, kernel_initializer=glorot_normal(seed=None), activation='sigmoid', input_shape = (200,)))
 text_branch.add(Dense(512, kernel_initializer=glorot_normal(seed=None), activation = None))
-text_branch.add(keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
+text_branch.add(tf.keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
 
-model_combined=Model(inputs=[image_branch.input, text_branch.input], outputs=[image_branch.output, text_branch.output])
+model_combined=Model(inputs=[image_branch.input, text_branch.input], outputs=tf.concat(image_branch.output, text_branch.output))
 
 labels=[0,1]
 y_true = labels
-y_pred = tf.concat([image_embeddings, text_embeddings], 0)
+embeddings = tf.concat([image_embeddings, text_embeddings], 0)
 
 #def triplet_loss(image_embeddings, text_embeddings, margin, squared=True):
-def loss(labels, y_pred):
-    margin=0.2
-    image_embeddings, text_embeddings =tf.split(y_pred, num_or_size_splits=2, axis=0)
+def _batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin):
     return batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin, squared=True)
-    
 
-model_loss=loss(y_true, y_pred)
+def triplet_loss(margin):
+    @functools.wraps(_batch_all_triplet_loss)
+    def loss(labels, embeddings):
+        image_embeddings, text_embeddings =tf.split(embeddings, num_or_size_splits=2, axis=0)
+        return _batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin)
+    return loss
+    
 sgd = optimizers.SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
-model_combined.compile(loss=model_loss, optimizer=sgd)
+model_combined.compile(loss=triplet_loss, optimizer=sgd)
