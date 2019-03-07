@@ -12,15 +12,21 @@ from sklearn.cluster import KMeans
 import tensorflow as tf
 from sklearn.mixture import GaussianMixture
 from sklearn.decomposition import PCA
-from tensorflow.keras.models import Model, Sequential
-from tensorflow.keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, Concatenate
-from tensorflow.keras.initializers import glorot_normal
-from tensorflow.keras import optimizers
+from keras.models import Model, Sequential
+from keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, Concatenate, GlobalAveragePooling2D, BatchNormalization
+from keras.initializers import glorot_normal
+from keras import optimizers
 import keras.backend as K
 import glob
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import euclidean_distances
+
+#Hyperparameters
+
+BatchSize = 64
+Alpha = 0.5
+
 
 #Read Data Paths
 
@@ -32,37 +38,10 @@ image_xyt_pairs = [list(a) for a in zip(images,xyt)]
 
 label_dict = {}
 label_counter = 0
-label = []
+labels = []
 image_list = []
 text_list = []
 
-def assign_label(key):
-    global label_counter
-    if key in label_dict.keys():
-        label.append(label_dict[key])
-        return 0
-    else:
-        label_dict[key] = label_counter
-        label.append(label_counter)
-        label_counter=label_counter+1
-        #Do Something
-        return 0
-for image in images:
-    filename = image.split("/")[-1]
-    foldername = "/".join(image.split("/")[0:-1])
-    tags = filename.split("_")
-    if len(tags) == 5:
-        key = foldername+"/"+"_".join(tags[0:4])
-        assign_label(key)
-        
-
-    elif len(tags) == 3:
-        key = foldername+"/"+tags[0]+"_"+tags[2]
-        assign_label(key)
-    #elif len(tags) == 4:
-        
-    #elif len(tags) == 2:
-    
 #Minutae Data Preprocessing
 def crop_top(df,crop_size):
     #this will take top n inputs for df
@@ -73,7 +52,7 @@ def crop_top(df,crop_size):
     else:
         return df[0:crop_size,:]
     
-def preprocess_xyt_file(filename, crop_size):
+def preprocess_xyt_file(filename, crop_size=50):
     df=pd.read_csv(filename, sep=' ',header=None)
     df = np.array(df)
     np.sort(df, axis=0)
@@ -83,6 +62,45 @@ def preprocess_xyt_file(filename, crop_size):
     df_new = crop_top(df,crop_size)/normalization_factor
     
     return df_new.flatten()
+
+def assign_label(key):
+    global label_counter
+    if key in label_dict.keys():
+        labels.append(label_dict[key])
+        return 0
+    else:
+        label_dict[key] = label_counter
+        labels.append(label_counter)
+        label_counter=label_counter+1
+        #Do Something
+        return 0
+    
+for image in images:
+    filename = image.split("/")[-1]
+    foldername = "/".join(image.split("/")[0:-1])
+    tags = filename.split("_")
+    if len(tags) == 5:
+        key = foldername+"/"+"_".join(tags[0:4])
+        assign_label(key)
+        image_data = cv2.imread(image)
+        image_list.append(image_data)
+        Index = images.index(image)
+        text_list.append(preprocess_xyt_file(xyt[Index]))
+
+    elif len(tags) == 3:
+        key = foldername+"/"+tags[0]+"_"+tags[2]
+        assign_label(key)
+        image_data = cv2.imread(image)
+        image_list.append(image_data)
+        Index = images.index(image)
+        text_list.append(preprocess_xyt_file(xyt[Index]))
+        
+print("Image List: ", len(image_list), "Text List : ", len(text_list), "Labels : ", len(labels))
+
+    #elif len(tags) == 4:
+        
+    #elif len(tags) == 2:
+    
 
 
 
@@ -286,25 +304,24 @@ def batch_hard_triplet_loss(labels, embeddings, margin, squared=False):
 
     return triplet_loss
 
+input_images = Input(shape=(BatchSize,512,512,3))
+resnet50_model = keras.applications.resnet50.ResNet50(include_top=False, weights="imagenet", input_shape=(512,512,3))
+x = resnet50_model(input_images)
+x = GlobalAveragePooling2D(data_format='channels_last')(x)
+x = Dense(1024,kernel_initializer=glorot_normal(seed=None), activation='sigmoid')(x)
+x = Dense(512, kernel_initializer=glorot_normal(seed=None), activation=None)(x)
+output_image = BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None)(x)
+x.summary()
 
-image_branch=Sequential()
-resnet50_model = tf.keras.applications.resnet50.ResNet50(include_top=False, weights="imagenet", input_shape=(512,512,3))
-image_branch.add(resnet50_model)
-#model.add(keras.layers.pooling.AveragePooling2D(pool_size=(2, 2), strides=None, border_mode='valid', dim_ordering='default'))
-#model.add(Flatten())
-image_branch.add(tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last'))
-image_branch.add(Dense(1024,kernel_initializer=glorot_normal(seed=None), activation='sigmoid'))
-image_branch.add(Dense(512, kernel_initializer=glorot_normal(seed=None), activation=None))
-image_branch.add(tf.keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
-
-text_branch = Sequential()
-text_branch.add(Dense(400, kernel_initializer=glorot_normal(seed=None), activation='sigmoid', input_shape = (200,)))
-text_branch.add(Dense(512, kernel_initializer=glorot_normal(seed=None), activation = None))
-text_branch.add(tf.keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
+input_text = Input(shape=(BatchSize,200))
+y = Dense(400, kernel_initializer=glorot_normal(seed=None), activation='sigmoid', input_shape = (200))(input_text)
+y = Dense(512, kernel_initializer=glorot_normal(seed=None), activation = None)(y)
+output_text = BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None)(y)
+y.summary()
 
 #model_combined = Sequential()
-mergedOut = Concatenate()([image_branch.output,text_branch.output])
-model_combined=Model(inputs=[image_branch.input, text_branch.input], outputs=mergedOut)
+mergedOut = Concatenate(axis=0)([output_image,output_text])
+model_combined=Model(inputs=[input_images, input_text], outputs=mergedOut)
 
 labels=[0,1]
 y_true = labels
@@ -321,6 +338,6 @@ def triplet_loss(margin):
         return _batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin)
     return loss
 
-triplet_loss = triplet_loss(0.5)
+triplet_loss = triplet_loss(Alpha)
 sgd = optimizers.SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
 model_combined.compile(loss=triplet_loss, optimizer=sgd)
