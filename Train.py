@@ -7,22 +7,18 @@ import keras
 import matplotlib
 import functools
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from sklearn.cluster import KMeans
 import tensorflow as tf
-from sklearn.mixture import GaussianMixture
-from sklearn.decomposition import PCA
 from keras.models import Model, Sequential
 from keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, Concatenate, GlobalAveragePooling2D, BatchNormalization
 from keras.initializers import glorot_normal
 from keras.callbacks import ModelCheckpoint, TensorBoard
+from keras.utils import multi_gpu_model
 from keras import optimizers
 import keras.backend as K
 import glob
-import pandas as pd
 import numpy as np
-from sklearn.metrics.pairwise import euclidean_distances
 
+sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
 #Hyperparameters
 
 BatchSize = 64
@@ -30,8 +26,8 @@ Alpha = 0.5
 
 #Read Data Paths
 
-images = sorted(glob.glob('/work/cvma/FP/data/*/*[!_xyt]/*'))
-xyt = sorted(glob.glob('/work/cvma/FP/data/*/*_xyt/*'))
+images = sorted(glob.glob('/local/manasa/FP/data/*/*[!_xyt]/*'))
+xyt = sorted(glob.glob('/local/manasa/FP/data/*/*_xyt/*'))
 image_xyt_pairs = [list(a) for a in zip(images,xyt)]
 
 #Image Data Preprocessing
@@ -52,15 +48,17 @@ def crop_top(df,crop_size):
     else:
         return df[0:crop_size,:]
     
-def preprocess_xyt_file(filename, crop_size=50):
-    df=pd.read_csv(filename, sep=' ',header=None)
-    df = np.array(df)
-    np.sort(df, axis=0)
-    df = df[df[:,3].argsort()[::-1]]
+def is_file_empty(filename):
+    return os.stat(filename).st_size == 0
 
-    normalization_factor = np.array([512,512,360,100])
+def preprocess_xyt_file(filename, crop_size=50):
+    df=np.loadtxt(filename, delimiter=' ')
+    if len(np.shape(df)) != 1:
+	df = df[df[:,3].argsort()[::-1]]
+    else:
+	df = np.expand_dims(df,0)
+    normalization_factor = np.array([512.0,512.0,360.0,100.0])
     df_new = crop_top(df,crop_size)/normalization_factor
-    
     return df_new.flatten()
 
 def assign_label(key):
@@ -94,9 +92,20 @@ for image in images:
         image_list.append(image_data)
         Index = images.index(image)
         text_list.append(preprocess_xyt_file(xyt[Index]))
-        #elif len(tags) == 4:
-        
-    #elif len(tags) == 2:
+    elif len(tags) == 4:
+	Index = images.index(image)
+	if is_file_empty(xyt[Index]):
+		continue
+	key = foldername+"/"+tags[0]+"_sess_"+tags[2]+"_"+tags[3]
+        assign_label(key)
+	image_list.append(image_data)
+        text_list.append(preprocess_xyt_file(xyt[Index]))
+    elif len(tags) == 2:
+	key = foldername+tags[0][1:]
+	assign_label(key)
+	image_list.append(image_data)
+        Index = images.index(image)
+        text_list.append(preprocess_xyt_file(xyt[Index])) 
         
 print("Image List: ", len(image_list), "Text List : ", len(text_list), "Labels : ", len(labels))
 
@@ -112,17 +121,6 @@ y_pred = tf.concat([image_embeddings, text_embeddings], 0)
 
 y1,y2 =tf.split(y_pred, num_or_size_splits=2, axis=0)
 tf.shape(image_embeddings)
-
-def euclid(image,text):
-    return euclidean_distances(image,text,squared=True)
-
-'''def _pairwise_distances(image_embeddings, text_embeddings, squared=True):
-    #Returns Pairwise Euclidean Distances
-    if squared == True:
-        distances = tf.py_func(euclid, [image_embeddings, text_embeddings], tf.float32)
-    else:
-        distances = tf.py_func(euclidean_distances,[image_embeddings, text_embeddings], tf.float32)        
-    return distances
 
 #No need for positive mask in Multimodal Triplet. Anchor and Positives will be fed through data inputs.'''
 def _pairwise_distances(image_embeddings, text_embeddings, squared=False):
@@ -378,7 +376,9 @@ def triplet_loss(margin):
 
 triplet_loss = triplet_loss(Alpha)
 sgd = optimizers.SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
+#parallel_model = multi_gpu_model(model_combined, gpus=4)
 model_combined.compile(loss=triplet_loss, optimizer=sgd)
+#parallel_model.compile(loss=triplet_loss, optimizer=sgd)
 
 checkpoint_callback = ModelCheckpoint(os.path.join("models/run_1/","epoch_{epoch:06d}.h5"))
 tensorboard_callback = TensorBoard()
