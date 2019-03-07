@@ -15,6 +15,7 @@ from sklearn.decomposition import PCA
 from keras.models import Model, Sequential
 from keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, Concatenate, GlobalAveragePooling2D, BatchNormalization
 from keras.initializers import glorot_normal
+from keras.callbacks import ModelCheckpoint, TensorBoard
 from keras import optimizers
 import keras.backend as K
 import glob
@@ -26,7 +27,6 @@ from sklearn.metrics.pairwise import euclidean_distances
 
 BatchSize = 64
 Alpha = 0.5
-
 
 #Read Data Paths
 
@@ -94,15 +94,11 @@ for image in images:
         image_list.append(image_data)
         Index = images.index(image)
         text_list.append(preprocess_xyt_file(xyt[Index]))
-        
-print("Image List: ", len(image_list), "Text List : ", len(text_list), "Labels : ", len(labels))
-
-    #elif len(tags) == 4:
+        #elif len(tags) == 4:
         
     #elif len(tags) == 2:
-    
-
-
+        
+print("Image List: ", len(image_list), "Text List : ", len(text_list), "Labels : ", len(labels))
 
 """Define functions to create the triplet loss with online triplet mining."""
 
@@ -120,7 +116,7 @@ tf.shape(image_embeddings)
 def euclid(image,text):
     return euclidean_distances(image,text,squared=True)
 
-def _pairwise_distances(image_embeddings, text_embeddings, squared=True):
+'''def _pairwise_distances(image_embeddings, text_embeddings, squared=True):
     #Returns Pairwise Euclidean Distances
     if squared == True:
         distances = tf.py_func(euclid, [image_embeddings, text_embeddings], tf.float32)
@@ -128,8 +124,50 @@ def _pairwise_distances(image_embeddings, text_embeddings, squared=True):
         distances = tf.py_func(euclidean_distances,[image_embeddings, text_embeddings], tf.float32)        
     return distances
 
-#No need for positive mask in Multimodal Triplet. Anchor and Positives will be fed through data inputs.
+#No need for positive mask in Multimodal Triplet. Anchor and Positives will be fed through data inputs.'''
+def _pairwise_distances(image_embeddings, text_embeddings, squared=False):
+    """Compute the 2D matrix of distances between all the embeddings.
 
+    Args:
+        embeddings: tensor of shape (batch_size, embed_dim)
+        squared: Boolean. If true, output is the pairwise squared euclidean distance matrix.
+                 If false, output is the pairwise euclidean distance matrix.
+
+    Returns:
+        pairwise_distances: tensor of shape (batch_size, batch_size)
+    """
+    # Get the dot product between all embeddings
+    # shape (batch_size, batch_size)
+    dot_product11 = tf.matmul(image_embeddings, tf.transpose(image_embeddings))
+    dot_product22 = tf.matmul(text_embeddings, tf.transpose(text_embeddings))
+    dot_product12 = tf.matmul(image_embeddings, tf.transpose(text_embeddings))
+
+    # Get squared L2 norm for each embedding. We can just take the diagonal of `dot_product`.
+    # This also provides more numerical stability (the diagonal of the result will be exactly 0).
+    # shape (batch_size,)
+    square_norm11 = tf.diag_part(dot_product11)
+    square_norm22 = tf.diag_part(dot_product22)
+
+    # Compute the pairwise distance matrix as we have:
+    # ||a - b||^2 = ||a||^2  - 2 <a, b> + ||b||^2
+    # shape (batch_size, batch_size)
+    distances = tf.expand_dims(square_norm11, 0) - 2.0 * dot_product12 + tf.expand_dims(square_norm22, 1)
+
+    # Because of computation errors, some distances might be negative so we put everything >= 0.0
+    distances = tf.maximum(distances, 0.0)
+
+    if not squared:
+        # Because the gradient of sqrt is infinite when distances == 0.0 (ex: on the diagonal)
+        # we need to add a small epsilon where distances == 0.0
+        mask = tf.to_float(tf.equal(distances, 0.0))
+        distances = distances + mask * 1e-16
+
+        distances = tf.sqrt(distances)
+
+        # Correct the epsilon added: set the distances on the mask to be exactly 0.0
+        distances = distances * (1.0 - mask)
+
+    return distances
 def _get_anchor_negative_triplet_mask(labels):
     """Return a 2D mask where mask[a, n] is True iff a and n have distinct labels.
 
@@ -250,7 +288,7 @@ def batch_all_triplet_loss(labels, image_embeddings, text_embeddings, margin, sq
     # Get final mean triplet loss over the positive valid triplets
     triplet_loss = (tf.reduce_sum(L_tii) + tf.reduce_sum(L_itt)) / (num_positive_triplets_tii + num_positive_triplets_itt + 1e-16)
     
-    return triplet_loss, fraction_positive_triplets
+    return triplet_loss
 
 
 def batch_hard_triplet_loss(labels, embeddings, margin, squared=False):
@@ -304,28 +342,28 @@ def batch_hard_triplet_loss(labels, embeddings, margin, squared=False):
 
     return triplet_loss
 
-input_images = Input(shape=(BatchSize,512,512,3))
+input_images = Input(shape=(512,512,3))
 resnet50_model = keras.applications.resnet50.ResNet50(include_top=False, weights="imagenet", input_shape=(512,512,3))
 x = resnet50_model(input_images)
 x = GlobalAveragePooling2D(data_format='channels_last')(x)
 x = Dense(1024,kernel_initializer=glorot_normal(seed=None), activation='sigmoid')(x)
 x = Dense(512, kernel_initializer=glorot_normal(seed=None), activation=None)(x)
 output_image = BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None)(x)
-x.summary()
+#x.summary()
 
-input_text = Input(shape=(BatchSize,200))
-y = Dense(400, kernel_initializer=glorot_normal(seed=None), activation='sigmoid', input_shape = (200))(input_text)
+input_text = Input(shape=(200,))
+y = Dense(400, kernel_initializer=glorot_normal(seed=None), activation='sigmoid', input_shape = (200,))(input_text)
 y = Dense(512, kernel_initializer=glorot_normal(seed=None), activation = None)(y)
 output_text = BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None)(y)
-y.summary()
+#y.summary()
 
 #model_combined = Sequential()
 mergedOut = Concatenate(axis=0)([output_image,output_text])
 model_combined=Model(inputs=[input_images, input_text], outputs=mergedOut)
 
-labels=[0,1]
-y_true = labels
-embeddings = tf.concat([image_embeddings, text_embeddings], 0)
+
+#y_true = labels
+#embeddings = tf.concat([image_embeddings, text_embeddings], 0)
 
 #def triplet_loss(image_embeddings, text_embeddings, margin, squared=True):
 def _batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin):
@@ -341,3 +379,8 @@ def triplet_loss(margin):
 triplet_loss = triplet_loss(Alpha)
 sgd = optimizers.SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
 model_combined.compile(loss=triplet_loss, optimizer=sgd)
+
+checkpoint_callback = ModelCheckpoint(os.path.join("models/run_1/","epoch_{epoch:06d}.h5"))
+tensorboard_callback = TensorBoard()
+model_combined.fit(x=[image_list, text_list], y=labels, batch_size=BatchSize, epochs=200, callbacks=[checkpoint_callback, tensorboard_callback], validation_split=0.0, validation_data=None, shuffle=True, class_weight=None, sample_weight=None, initial_epoch=0)
+print("Done!")
