@@ -5,6 +5,7 @@ import random
 import cv2
 import keras
 import matplotlib
+import functools
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
@@ -12,7 +13,7 @@ import tensorflow as tf
 from sklearn.mixture import GaussianMixture
 from sklearn.decomposition import PCA
 from tensorflow.keras.models import Model, Sequential
-from tensorflow.keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D
+from tensorflow.keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, Concatenate
 from tensorflow.keras.initializers import glorot_normal
 from tensorflow.keras import optimizers
 import keras.backend as K
@@ -32,6 +33,8 @@ image_xyt_pairs = [list(a) for a in zip(images,xyt)]
 label_dict = {}
 label_counter = 0
 label = []
+image_list = []
+text_list = []
 
 def assign_label(key):
     global label_counter
@@ -51,6 +54,7 @@ for image in images:
     if len(tags) == 5:
         key = foldername+"/"+"_".join(tags[0:4])
         assign_label(key)
+        
 
     elif len(tags) == 3:
         key = foldername+"/"+tags[0]+"_"+tags[2]
@@ -69,16 +73,18 @@ def crop_top(df,crop_size):
     else:
         return df[0:crop_size,:]
     
-def preprocess_xyt_file(filename):
+def preprocess_xyt_file(filename, crop_size):
     df=pd.read_csv(filename, sep=' ',header=None)
     df = np.array(df)
     np.sort(df, axis=0)
     df = df[df[:,3].argsort()[::-1]]
 
     normalization_factor = np.array([512,512,360,100])
-    df_new = crop_top(df,50)/normalization_factor
+    df_new = crop_top(df,crop_size)/normalization_factor
     
     return df_new.flatten()
+
+
 
 """Define functions to create the triplet loss with online triplet mining."""
 
@@ -296,7 +302,9 @@ text_branch.add(Dense(400, kernel_initializer=glorot_normal(seed=None), activati
 text_branch.add(Dense(512, kernel_initializer=glorot_normal(seed=None), activation = None))
 text_branch.add(tf.keras.layers.BatchNormalization(axis=-1, momentum=0.99, epsilon=0.001, center=True, scale=True, beta_initializer='zeros', gamma_initializer='ones', moving_mean_initializer='zeros', moving_variance_initializer='ones', beta_regularizer=None, gamma_regularizer=None, beta_constraint=None, gamma_constraint=None))
 
-model_combined=Model(inputs=[image_branch.input, text_branch.input], outputs=tf.concat(image_branch.output, text_branch.output))
+#model_combined = Sequential()
+mergedOut = Concatenate()([image_branch.output,text_branch.output])
+model_combined=Model(inputs=[image_branch.input, text_branch.input], outputs=mergedOut)
 
 labels=[0,1]
 y_true = labels
@@ -312,6 +320,7 @@ def triplet_loss(margin):
         image_embeddings, text_embeddings =tf.split(embeddings, num_or_size_splits=2, axis=0)
         return _batch_all_triplet_loss(labels,image_embeddings, text_embeddings, margin)
     return loss
-    
+
+triplet_loss = triplet_loss(0.5)
 sgd = optimizers.SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
 model_combined.compile(loss=triplet_loss, optimizer=sgd)
