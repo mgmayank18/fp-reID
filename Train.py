@@ -54,9 +54,9 @@ def is_file_empty(filename):
 def preprocess_xyt_file(filename, crop_size=50):
     df=np.loadtxt(filename, delimiter=' ')
     if len(np.shape(df)) != 1:
-	df = df[df[:,3].argsort()[::-1]]
+        df = df[df[:,3].argsort()[::-1]]
     else:
-	df = np.expand_dims(df,0)
+        df = np.expand_dims(df,0)
     normalization_factor = np.array([512.0,512.0,360.0,100.0])
     df_new = crop_top(df,crop_size)/normalization_factor
     return df_new.flatten()
