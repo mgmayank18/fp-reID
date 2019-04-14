@@ -59,9 +59,8 @@ def text_net (text_dict, reuse, is_training):
     return out
     
 ###################################################################################################################
-
+tf.reset_default_graph()
 with tf.name_scope("inputs"):
-    tf.reset_default_graph()
     reuse = True
     learning_rate = 0.001
     image_dict = tf.placeholder(tf.float32, shape=(batch_size,512,512,3))
